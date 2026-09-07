@@ -12,6 +12,7 @@ on-device. No server, no connection needed after the first load.
 * Live territory/score estimate from the network's ownership head
 * Undo · Pass · Resign; two passes end the game and it is scored automatically
 * A **PASSED** badge on a player's row whenever their last move was a pass
+* Captured stones fly to their captor's row — up to White, down to Black
 * **The game in progress survives closing the app** — the menu offers Resume
 * **Match history**: every finished game of 6+ moves is kept, with a review
   screen you can scrub move by move
@@ -121,6 +122,17 @@ counting can cost it a point or two.
 
 **Backends.** WebGL first, WASM second, plain CPU last. The status line on the
 menu says which one is in use.
+
+**Surviving a broken GPU.** A network evaluation is checked before it is used:
+non-finite outputs, or a policy with no spread at all, raise an `EngineFault`
+rather than being played. This matters because a policy carrying no information
+leaves the candidate list in raw index order, and the AI then marches stones
+along the top edge of the board — a lost WebGL context or a mobile backend that
+quietly drops to half precision can both cause it. On a fault the engine
+reloads, and falls back to WASM (always float32) if the same backend faults
+again. Coming back from the background also repaints the board — a discarded
+canvas backing store is why it could otherwise return with no wood behind it —
+and probes the network before play continues.
 
 ---
 

@@ -74,7 +74,8 @@ h1{margin:0;font-size:29px;letter-spacing:.06em;font-weight:600}
 .pc-name{font-weight:600;font-size:15px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pc-tag{font-weight:400;color:var(--dim);font-size:12px}
 .pc-sub{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pcard.active .pc-sub.thinking{color:var(--gold)}
+.think{color:var(--gold)}
+.think::before{content:" · "; color:var(--dim)}
 .pc-score{font-variant-numeric:tabular-nums;font-size:21px;font-weight:600;letter-spacing:.01em}
 
 .pass-pill{font-size:10.5px;font-weight:700;letter-spacing:.12em;

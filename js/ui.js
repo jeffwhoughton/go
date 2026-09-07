@@ -1,6 +1,8 @@
 /* ui.js — canvas goban with drag-to-place */
 'use strict';
 
+const FLY_MS = 600;
+
 class BoardView {
   constructor(canvas, onPlay) {
     this.cv = canvas;
@@ -15,7 +17,41 @@ class BoardView {
     this.overlay = null;      // {area:Uint8Array, dead:Uint8Array}
     this.px = 0; this.dpr = 1;
     this._wood = null;
+    this.flying = [];         // captured stones on their way to a player's row
+    this._raf = null;
     this._bind();
+  }
+
+  /* Drop cached pixels and repaint.  Mobile browsers may discard a canvas'
+     backing store while the app sits in the background; the cached wood
+     texture then draws as nothing and the board loses its background. */
+  invalidate() {
+    this._wood = null;
+    this.render();
+  }
+
+  /* ---------- captured-stone animation ---------- */
+  flyCaptures(locs, color, toBottom) {
+    if (!locs || !locs.length || !this.px) return;
+    const now = performance.now();
+    for (let i = 0; i < locs.length; i++)
+      this.flying.push({ loc: locs[i], color, toBottom, t0: now + i * 50 });
+    this._animate();
+  }
+  _animate() {
+    if (this._raf) return;
+    const step = () => {
+      this._raf = null;
+      const now = performance.now();
+      this.flying = this.flying.filter(f => now - f.t0 < FLY_MS);
+      this.render();
+      if (this.flying.length) this._raf = requestAnimationFrame(step);
+    };
+    this._raf = requestAnimationFrame(step);
+  }
+  clearFlying() {
+    this.flying.length = 0;
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
   }
 
   /* ---------- geometry ---------- */
@@ -122,6 +158,7 @@ class BoardView {
     const ctx = this.ctx, dpr = this.dpr, size = this.size, cell = this.cell;
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, this.px, this.px);
     if (!this._wood) this._makeWood();
     ctx.drawImage(this._wood, 0, 0, this.px, this.px);
 
@@ -210,6 +247,24 @@ class BoardView {
       ctx.strokeStyle = 'rgba(255,246,220,0.92)';
       ctx.lineWidth = Math.max(1.3, cell * 0.06);
       ctx.beginPath(); ctx.arc(x, y, cell * 0.58, 0, 7); ctx.stroke();
+    }
+
+    /* captured stones travelling to their captor's row */
+    if (this.flying.length) {
+      const now = performance.now();
+      for (const f of this.flying) {
+        const p = Math.max(0, Math.min(1, (now - f.t0) / FLY_MS));
+        if (p <= 0) continue;
+        const e = p * p * (3 - 2 * p);                          // smooth in-out
+        const sx = this.cx(f.loc % size), sy = this.cy((f.loc / size) | 0);
+        const tx = this.px / 2;
+        // stop just at the board edge and fade out on the way, so a stone is
+        // gone before it would be sliced off by the canvas boundary
+        const ty = f.toBottom ? this.px + cell * 0.4 : -cell * 0.4;
+        const alpha = p < 0.5 ? 1 : 1 - (p - 0.5) / 0.5;
+        this._stone(sx + (tx - sx) * e, sy + (ty - sy) * e,
+                    cell * 0.475 * (1 - 0.3 * e), f.color, Math.max(0, alpha));
+      }
     }
     ctx.restore();
   }

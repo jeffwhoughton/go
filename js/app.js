@@ -7,6 +7,13 @@ const KOMI = 7.5;
    pace rather than appearing the moment the stone is released. */
 const MIN_AI_THINK_MS = 500;
 
+/* Send the stones a move just captured towards the row of the player who took
+   them: White's prisoners fly up to the top card, Black's down to the bottom. */
+function animateCaptures() {
+  const cap = S.game.pos.lastCaptured;
+  if (cap && S.view) S.view.flyCaptures(cap.locs, cap.color, cap.by === BLACK);
+}
+
 const S = {
   size: 19, levelIdx: 16, net: null, game: null, view: null, revView: null,
   search: null, thinking: false, thinkText: '', over: false,
@@ -135,10 +142,10 @@ function refresh() {
 
   $('card-black').classList.toggle('active', !S.over && g.toMove === BLACK);
   $('card-white').classList.toggle('active', !S.over && g.toMove === WHITE);
+  // The prisoner counts stay put; White's progress sits beside them.
   $('sub-black').textContent = plural(g.prisoners[BLACK], 'prisoner');
-  const wsub = $('sub-white');
-  if (S.thinking) { wsub.textContent = S.thinkText || 'thinking…'; wsub.classList.add('thinking'); }
-  else { wsub.textContent = plural(g.prisoners[WHITE], 'prisoner'); wsub.classList.remove('thinking'); }
+  $('sub-white').textContent = plural(g.prisoners[WHITE], 'prisoner');
+  setThinking(S.thinking ? (S.thinkText || 'thinking…') : '');
 
   const wLast = lastMoveOf(WHITE), bLast = lastMoveOf(BLACK);
   togglePill($('pass-white'), !!wLast && wLast.loc === PASS);
@@ -150,6 +157,12 @@ function refresh() {
   } else { $('score-black').textContent = '—'; $('score-white').textContent = '—'; }
 
   $('btn-undo').disabled = S.over || g.moves.length === 0;
+}
+
+function setThinking(text) {
+  const el = $('think-white');
+  el.textContent = text;
+  el.classList.toggle('hidden', !text);
 }
 
 function togglePill(el, on) {
@@ -195,7 +208,10 @@ async function updateEstimate() {
     }
     S.est = { black: b + g.prisoners[BLACK], white: w + g.prisoners[WHITE] + g.komi };
     refresh();
-  } catch (e) { console.warn(e); }
+  } catch (e) {
+    console.warn(e);
+    if (e && e.name === 'EngineFault') await S.net.recover();
+  }
 }
 
 /* ================================ MOVES ================================ */
@@ -203,7 +219,7 @@ async function onHumanPlay(loc) {
   const g = S.game;
   if (S.over || S.thinking || g.toMove !== BLACK) return;
   if (!g.play(loc)) { flash(); return; }
-  refresh(); persist();
+  refresh(); animateCaptures(); persist();
   if (g.over) return endByPasses();
   await updateEstimate();
   aiTurn();
@@ -214,7 +230,7 @@ function flash() {
                       { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 160 });
 }
 
-async function aiTurn() {
+async function aiTurn(retrying) {
   const g = S.game;
   if (S.over || g.toMove !== WHITE) return;
   S.thinking = true; S.thinkText = 'thinking…';
@@ -227,9 +243,21 @@ async function aiTurn() {
   try {
     out = await search.run(level, (done, total) => {
       S.thinkText = `thinking… ${done}/${total}`;
-      const el = $('sub-white'); if (el) el.textContent = S.thinkText;
+      setThinking(S.thinkText);
     });
-  } catch (e) { console.error(e); S.thinking = false; refresh(); return; }
+  } catch (e) {
+    console.error(e);
+    if (e && e.name === 'EngineFault' && !retrying) {
+      setThinking('engine hiccup — restarting…');
+      const bk = await S.net.recover(m => setThinking(m));
+      S.thinking = false; S.search = null;
+      if (bk) return aiTurn(true);
+      setThinking('engine error — reload the app');
+      refresh();
+      return;
+    }
+    S.thinking = false; refresh(); return;
+  }
   const spent = performance.now() - startedAt;
   if (spent < MIN_AI_THINK_MS) await new Promise(r => setTimeout(r, MIN_AI_THINK_MS - spent));
   if (search.cancelled || S.search !== search) return;   // undo may have landed during the pause
@@ -242,7 +270,7 @@ async function aiTurn() {
     for (const k of order) if (g.play(root.moves[k])) { done = true; break; }
     if (!done) g.play(PASS);
   }
-  refresh(); persist();
+  refresh(); animateCaptures(); persist();
   if (g.over) return endByPasses();
   await updateEstimate();
 }
@@ -449,6 +477,7 @@ function wireControls() {
     }
     if (!undone) return;
     S.overlay = null;
+    if (S.view) S.view.clearFlying();
     refresh(); persist();
     await updateEstimate();
   };
@@ -490,5 +519,32 @@ window.addEventListener('load', () => {
 });
 
 /* keep the in-progress game safe if the app is backgrounded or killed */
-document.addEventListener('visibilitychange', () => { if (document.hidden && S.game && !S.over) persist(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (S.game && !S.over) persist(); return; }
+  onForeground();
+});
 window.addEventListener('pagehide', () => { if (S.game && !S.over) persist(); });
+window.addEventListener('pageshow', onForeground);
+
+/* Coming back from the background: repaint (a discarded canvas backing store
+   is why the board could return with no wood behind it) and check the network
+   still works, since a GPU context can be lost while we were away. */
+let foregroundBusy = false;
+async function onForeground() {
+  if (S.view) { S.view.clearFlying(); S.view.invalidate(); }
+  if (S.revView) S.revView.invalidate();
+  if (foregroundBusy || !S.ready || !S.net) return;
+  foregroundBusy = true;
+  try {
+    if (!(await S.net.probe())) {
+      const inGame = S.game && !S.over;
+      if (inGame) setThinking('engine hiccup — restarting…');
+      const bk = await S.net.recover(m => { if (inGame) setThinking(m); });
+      if (inGame) {
+        setThinking('');
+        if (bk && S.game.toMove === WHITE && !S.thinking) aiTurn();
+      }
+      if (!bk) $('engine-status').textContent = 'Engine error — reload the app';
+    }
+  } finally { foregroundBusy = false; }
+}

@@ -70,6 +70,7 @@ class Position {
     p.prisoners = this.prisoners.slice();
     p.h0 = this.h0; p.h1 = this.h1;
     p.nb = this.nb; p.zob = this.zob;
+    p.lastCaptured = null;
     return p;
   }
 
@@ -158,22 +159,25 @@ class Position {
   /* Play a move in place. Returns true on success. */
   play(i, c) {
     c = (c === undefined) ? this.toMove : c;
+    this.lastCaptured = null;
     if (i === PASS) { this.ko = -1; this.toMove = opp(c); return true; }
     if (this._tryPlay(i, c) < 0) return false;
     const o = opp(c);
     const { off, list } = this.nb;
     this._set(i, c);
-    let captured = 0, lastCapturedAt = -1;
+    let captured = 0, lastCapturedAt = -1, capturedLocs = null;
     for (let k = off[i]; k < off[i + 1]; k++) {
       const q = list[k];
       if (this.board[q] === o) {
         const ch = this.chainAt(q);
         if (ch.libs.length === 0) {
-          for (const s of ch.stones) { this._set(s, EMPTY); lastCapturedAt = s; }
+          if (!capturedLocs) capturedLocs = [];
+          for (const s of ch.stones) { this._set(s, EMPTY); lastCapturedAt = s; capturedLocs.push(s); }
           captured += ch.stones.length;
         }
       }
     }
+    if (capturedLocs) this.lastCaptured = { locs: capturedLocs, color: o, by: c };
     this.prisoners[c] += captured;
     // simple ko: exactly one stone captured, and the played stone is a lone stone in atari
     this.ko = -1;

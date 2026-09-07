@@ -3,6 +3,16 @@
 
 const softplus = x => x > 20 ? x : Math.log1p(Math.exp(x));
 
+/* Thrown when the network returns something unusable — NaN/Inf, or a policy
+   with no spread at all.  A GPU whose context was lost while the app sat in the
+   background, or a mobile WebGL backend that quietly drops to half precision,
+   can both do this; playing the result anyway produces moves marching along the
+   top of the board, because a policy with no information leaves the candidate
+   list in raw index order. */
+class EngineFault extends Error {
+  constructor(msg) { super(msg); this.name = 'EngineFault'; }
+}
+
 /* ===================== neural net ====================== */
 class KataNet {
   constructor(modelUrl) { this.modelUrl = modelUrl; this.model = null; this.backend = null; this.cache = new Map(); }
@@ -71,6 +81,18 @@ class KataNet {
     }
     logits[n] = r.policy[NN_AREA];
 
+    // Refuse to act on a policy that says nothing.  A healthy net spreads its
+    // on-board logits over several units; anything flat or non-finite is a
+    // backend failure, not a position.
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i <= n; i++) {
+      const p = logits[i];
+      if (!Number.isFinite(p)) throw new EngineFault('non-finite policy');
+      if (p < lo) lo = p;
+      if (p > hi) hi = p;
+    }
+    if (hi - lo < 1e-4) throw new EngineFault('degenerate policy');
+
     const v = r.value;
     const mx = Math.max(v[0], v[1], v[2]);
     const e0 = Math.exp(v[0] - mx), e1 = Math.exp(v[1] - mx), e2 = Math.exp(v[2] - mx);
@@ -88,10 +110,57 @@ class KataNet {
       const x = i % size, y = (i / size) | 0;
       own[i] = Math.tanh(r.own[y * NN_LEN + x]);
     }
+    if (!Number.isFinite(win) || !Number.isFinite(scoreMean)) throw new EngineFault('non-finite value head');
     const res = { logits, win, loss, noResult, scoreMean, scoreStdev, lead, own, pla };
     if (this.cache.size > 1200) this.cache.clear();
     this.cache.set(key, res);
     return res;
+  }
+
+  /* One throwaway evaluation on an empty 19x19; true if the net still works. */
+  async probe() {
+    try {
+      const bin = new Float32Array(NN_AREA * NUM_BIN);
+      for (let i = 0; i < NN_AREA; i++) bin[i * NUM_BIN] = 1.0;      // whole board on
+      const r = await this.raw(bin, new Float32Array(NUM_GLOBAL));
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < NN_AREA; i++) {
+        const p = r.policy[i];
+        if (!Number.isFinite(p)) return false;
+        if (p < lo) lo = p;
+        if (p > hi) hi = p;
+      }
+      return hi - lo > 1e-3;
+    } catch (e) { return false; }
+  }
+
+  /* Rebuild after a fault: first a fresh model on the same backend (enough for
+     a lost GPU context), then progressively safer backends.  Returns the
+     backend now in use, or null if nothing worked. */
+  async recover(onStatus) {
+    const say = onStatus || (() => {});
+    this.cache.clear();
+    this.faults = (this.faults || 0) + 1;
+    const tryBackend = async (bk) => {
+      try {
+        if (bk === 'wasm' && window.tf && tf.wasm && tf.wasm.setWasmPaths) tf.wasm.setWasmPaths('js/vendor/');
+        await tf.setBackend(bk);
+        await tf.ready();
+        if (tf.getBackend() !== bk) return false;
+        this.model = await tf.loadGraphModel(this.modelUrl);
+        if (!(await this.probe())) return false;
+        this.backend = bk;
+        return true;
+      } catch (e) { return false; }
+    };
+    say('Restarting engine…');
+    if (this.faults < 3 && await tryBackend(this.backend)) return this.backend;
+    for (const bk of ['wasm', 'cpu']) {
+      if (bk === this.backend && this.faults < 3) continue;
+      say(`Switching to ${bk.toUpperCase()}…`);
+      if (await tryBackend(bk)) return bk;
+    }
+    return null;
   }
 }
 
@@ -153,7 +222,10 @@ class Search {
     const size = game.size, n = size * size;
     const order = [];
     for (let i = 0; i < n; i++) order.push(i);
-    order.sort((a, b) => ev.logits[b] - ev.logits[a]);
+    // Never let a bad comparator leave the list in index order — that is what
+    // turns a broken evaluation into stones marching along the top edge.
+    const key = i => (Number.isFinite(ev.logits[i]) ? ev.logits[i] : -1e30);
+    order.sort((a, b) => (key(b) - key(a)) || (a - b));
     const cand = [];
     const c = pos.toMove;
     for (const i of order) {
