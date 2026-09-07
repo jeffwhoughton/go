@@ -4,13 +4,18 @@ A progressive web app that plays Go against a KataGo neural network entirely
 on-device. No server, no connection needed after the first load.
 
 * **Board sizes** 9×9, 13×13, 19×19
-* **12 strength settings**, from absolute beginner to full strength
+* **22 strength settings** in one dropdown, roughly 30 kyu to full strength
 * You always play **Black**; the AI plays White
 * Chinese rules, area scoring, komi 7.5, positional superko
 * Drag to place: press anywhere, guide lines show the target intersection,
   slide to adjust, release to play
 * Live territory/score estimate from the network's ownership head
 * Undo · Pass · Resign; two passes end the game and it is scored automatically
+* A **PASSED** badge on a player's row whenever their last move was a pass
+* **The game in progress survives closing the app** — the menu offers Resume
+* **Match history**: every finished game of 6+ moves is kept, with a review
+  screen you can scrub move by move
+* Board size and strength are remembered between sessions
 
 ---
 
@@ -65,7 +70,8 @@ js/features.js    KataGo input encoding (input version 7: 22 spatial + 19
                   including the ladder and pass-alive-area features
 js/engine.js      network wrapper + PUCT Monte-Carlo tree search
 js/ui.js          canvas goban, drag-to-place, territory overlay
-js/app.js         game flow
+js/store.js       localStorage: settings, game in progress, match history
+js/app.js         screens and game flow
 model/            KataGo b10c128 network, TensorFlow.js graph format,
                   float16 weights (~6 MB)
 js/vendor/        TensorFlow.js + its WASM backend, vendored so nothing is

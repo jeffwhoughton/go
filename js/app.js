@@ -1,49 +1,61 @@
-/* app.js — screens, game flow, AI turns */
+/* app.js — screens, game flow, AI turns, persistence */
 'use strict';
 
 const $ = id => document.getElementById(id);
 const KOMI = 7.5;
 
 const S = {
-  size: 19, levelIdx: 7, net: null, game: null, view: null,
-  search: null, thinking: false, over: false, result: null,
-  est: null, overlay: null, ready: false,
+  size: 19, levelIdx: 16, net: null, game: null, view: null, revView: null,
+  search: null, thinking: false, thinkText: '', over: false,
+  est: null, overlay: null, ready: false, recorded: false, endedAt: null,
 };
 
-/* ---------------- menu ---------------- */
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const fmt = v => (Math.round(v * 10) / 10).toFixed(1);
+const levelLabel = i => `${LEVELS[i].rank} — ${LEVELS[i].name}`;
+
+function show(screen) {
+  for (const id of ['menu', 'game', 'history', 'review']) $(id).classList.toggle('hidden', id !== screen);
+}
+
+/* ================================ MENU ================================ */
 function buildMenu() {
-  const list = $('level-list');
-  list.innerHTML = '';
-  LEVELS.forEach((lv, i) => {
-    const b = document.createElement('button');
-    b.className = 'lvl' + (i === S.levelIdx ? ' on' : '');
-    const filled = Math.max(1, Math.round((i + 1) / LEVELS.length * 5));
-    b.innerHTML = `<span class="dots">${[0,1,2,3,4].map(d =>
-        `<span class="dot${d < filled ? ' f' : ''}"></span>`).join('')}</span>
-      <span class="nm">${lv.name}</span><span class="rk">${lv.rank}</span>`;
-    b.onclick = () => {
-      S.levelIdx = i;
-      localStorage.setItem('go.level', i);
-      [...list.children].forEach(c => c.classList.remove('on'));
-      b.classList.add('on');
-    };
-    list.appendChild(b);
-    if (i === S.levelIdx) setTimeout(() => b.scrollIntoView({ block: 'nearest' }), 0);
-  });
+  const saved = Store.settings();
+  S.size = saved.size;
+  S.levelIdx = Math.min(saved.levelIdx, LEVELS.length - 1);
+
+  const sel = $('level-select');
+  sel.innerHTML = LEVELS.map((lv, i) =>
+    `<option value="${i}">${lv.rank} — ${lv.name}</option>`).join('');
+  sel.value = String(S.levelIdx);
+  sel.onchange = () => { S.levelIdx = +sel.value; Store.saveSettings(S.size, S.levelIdx); };
+
+  [...$('size-seg').children].forEach(c => c.classList.toggle('on', +c.dataset.size === S.size));
   $('size-seg').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     S.size = +b.dataset.size;
-    localStorage.setItem('go.size', S.size);
+    Store.saveSettings(S.size, S.levelIdx);
     [...$('size-seg').children].forEach(c => c.classList.toggle('on', c === b));
   };
-  const savedSize = +localStorage.getItem('go.size');
-  if (savedSize) {
-    S.size = savedSize;
-    [...$('size-seg').children].forEach(c => c.classList.toggle('on', +c.dataset.size === savedSize));
+
+  refreshResumeButton();
+}
+
+function refreshResumeButton() {
+  const c = Store.loadCurrent();
+  const btn = $('resume-btn');
+  if (c) {
+    btn.textContent = `Resume ${c.size}×${c.size} game (${c.moves.length} moves)`;
+    btn.disabled = !S.ready;
+    btn.classList.remove('hidden');
+    $('start-btn').classList.remove('primary');
+  } else {
+    btn.classList.add('hidden');
+    $('start-btn').classList.add('primary');
   }
 }
 
-/* ---------------- engine boot ---------------- */
+/* ============================ ENGINE BOOT ============================ */
 async function boot() {
   const st = $('engine-status');
   S.net = new KataNet('model/model.json');
@@ -52,6 +64,7 @@ async function boot() {
     st.textContent = `Ready — ${S.net.backend.toUpperCase()} · works offline`;
     st.classList.add('ready');
     $('start-btn').disabled = false;
+    $('resume-btn').disabled = false;
     S.ready = true;
   } catch (e) {
     console.error(e);
@@ -59,27 +72,47 @@ async function boot() {
   }
 }
 
-/* ---------------- game ---------------- */
-function newGame() {
-  S.game = new Game(S.size, KOMI);
-  S.over = false; S.result = null; S.overlay = null; S.est = null;
-  $('menu').classList.add('hidden');
-  $('game').classList.remove('hidden');
+/* ================================ GAME ================================ */
+function ensureView() {
+  if (!S.view) S.view = new BoardView($('board'), onHumanPlay);
+}
+
+function newGame(saved) {
+  ensureView();
+  S.game = new Game(saved ? saved.size : S.size, KOMI);
+  if (saved) {
+    S.levelIdx = Math.min(saved.levelIdx ?? S.levelIdx, LEVELS.length - 1);
+    for (const loc of saved.moves) if (!S.game.play(loc)) break;
+  }
+  S.over = false; S.overlay = null; S.est = null; S.recorded = false; S.endedAt = null;
+  S.thinking = false; S.search = null;
+
+  show('game');
   $('banner').classList.add('hidden');
   $('actions-play').classList.remove('hidden');
   $('actions-over').classList.add('hidden');
-  $('tag-white').textContent = LEVELS[S.levelIdx].name;
-  if (!S.view) {
-    S.view = new BoardView($('board'), onHumanPlay);
-    window.addEventListener('resize', () => S.view.layout());
-  }
-  S.view.size = S.size;
+  $('tag-white').textContent = LEVELS[S.levelIdx].rank;
+
+  S.view.size = S.game.size;
   S.view.overlay = null;
-  S.view._wood = null;
   S.view.px = 0;
   requestAnimationFrame(() => S.view.layout());
   refresh();
-  updateEstimate();
+  persist();
+  if (S.game.over) { endByPasses(); return; }
+  updateEstimate().then(() => { if (!S.over && S.game.toMove === WHITE) aiTurn(); });
+}
+
+function persist() {
+  if (S.over || S.game.over) Store.clearCurrent();
+  else Store.saveCurrent(S.game, S.levelIdx);
+}
+
+/* last move played by `color`, or null */
+function lastMoveOf(color) {
+  const mv = S.game.moves;
+  for (let i = mv.length - 1; i >= 0; i--) if (mv[i].color === color) return mv[i];
+  return null;
 }
 
 function refresh() {
@@ -100,6 +133,10 @@ function refresh() {
   if (S.thinking) { wsub.textContent = S.thinkText || 'thinking…'; wsub.classList.add('thinking'); }
   else { wsub.textContent = plural(g.prisoners[WHITE], 'prisoner'); wsub.classList.remove('thinking'); }
 
+  const wLast = lastMoveOf(WHITE), bLast = lastMoveOf(BLACK);
+  togglePill($('pass-white'), !!wLast && wLast.loc === PASS);
+  togglePill($('pass-black'), !!bLast && bLast.loc === PASS);
+
   if (S.est) {
     $('score-black').textContent = fmt(S.est.black);
     $('score-white').textContent = fmt(S.est.white);
@@ -107,10 +144,15 @@ function refresh() {
 
   $('btn-undo').disabled = S.over || g.moves.length === 0;
 }
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-const fmt = v => (Math.round(v * 10) / 10).toFixed(1);
 
-/* ownership -> per-player estimated area (black perspective) */
+function togglePill(el, on) {
+  if (on && el.classList.contains('hidden')) {
+    el.classList.remove('hidden');
+    el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
+  } else if (!on) el.classList.add('hidden');
+}
+
+/* ownership -> per-player estimated area (Chinese scoring) */
 async function updateEstimate() {
   const g = S.game;
   if (S.over) return;
@@ -125,28 +167,26 @@ async function updateEstimate() {
   } catch (e) { console.warn(e); }
 }
 
-/* ---------------- moves ---------------- */
+/* ================================ MOVES ================================ */
 async function onHumanPlay(loc) {
   const g = S.game;
   if (S.over || S.thinking || g.toMove !== BLACK) return;
   if (!g.play(loc)) { flash(); return; }
-  refresh();
+  refresh(); persist();
   if (g.over) return endByPasses();
   await updateEstimate();
   aiTurn();
 }
 
 function flash() {
-  const c = $('board');
-  c.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' },
-             { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 160 });
+  $('board').animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' },
+                      { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 160 });
 }
 
 async function aiTurn() {
   const g = S.game;
   if (S.over || g.toMove !== WHITE) return;
-  S.thinking = true;
-  S.thinkText = 'thinking…';
+  S.thinking = true; S.thinkText = 'thinking…';
   refresh();
   const level = LEVELS[S.levelIdx];
   const search = new Search(S.net, g);
@@ -155,28 +195,25 @@ async function aiTurn() {
   try {
     out = await search.run(level, (done, total) => {
       S.thinkText = `thinking… ${done}/${total}`;
-      const el = $('sub-white');
-      if (el) el.textContent = S.thinkText;
+      const el = $('sub-white'); if (el) el.textContent = S.thinkText;
     });
   } catch (e) { console.error(e); S.thinking = false; refresh(); return; }
-  if (search.cancelled || S.search !== search) { return; }
+  if (search.cancelled || S.search !== search) return;
   S.thinking = false; S.search = null;
 
-  let mv = out.move;
-  if (!g.play(mv)) {                       // superko or other rejection: try alternatives
-    const root = out.root, order = [];
-    for (let k = 0; k < root.moves.length; k++) order.push(k);
-    order.sort((a, b) => (root.N[b] - root.N[a]) || (root.P[b] - root.P[a]));
+  if (!g.play(out.move)) {                 // superko or other rejection
+    const root = out.root;
+    const order = [...root.moves.keys()].sort((a, b) => (root.N[b] - root.N[a]) || (root.P[b] - root.P[a]));
     let done = false;
-    for (const k of order) { if (g.play(root.moves[k])) { done = true; break; } }
+    for (const k of order) if (g.play(root.moves[k])) { done = true; break; }
     if (!done) g.play(PASS);
   }
-  refresh();
+  refresh(); persist();
   if (g.over) return endByPasses();
   await updateEstimate();
 }
 
-/* ---------------- endings ---------------- */
+/* =============================== ENDINGS =============================== */
 async function endByPasses() {
   S.thinking = true; S.thinkText = 'counting…'; refresh();
   const g = S.game;
@@ -194,33 +231,174 @@ async function endByPasses() {
   S.thinking = false;
   S.overlay = { area: sc.area, dead };
   S.est = { black: sc.black, white: sc.white };
-  const win = sc.diff > 0 ? 'Black' : 'White';
-  const by = Math.abs(sc.diff);
-  finish(`<b>${win} wins</b> by ${fmt(by)} — ${fmt(sc.black)} vs ${fmt(sc.white)}`);
+  const winner = sc.diff > 0 ? 'B' : 'W';
+  finish({ winner, reason: 'score', by: Math.abs(sc.diff), black: sc.black, white: sc.white },
+         Array.from(dead).join(''));
 }
 
-function finish(html) {
+function resultText(r) {
+  const who = r.winner === 'B' ? 'Black' : 'White';
+  if (r.reason === 'resign') return `<b>${who} wins</b> — ${r.winner === 'B' ? 'White' : 'Black'} resigned`;
+  return `<b>${who} wins</b> by ${fmt(r.by)} — ${fmt(r.black)} vs ${fmt(r.white)}`;
+}
+
+function finish(result, deadStr) {
   S.over = true;
-  $('banner').innerHTML = html;
+  S.endedAt = Date.now();
+  $('banner').innerHTML = resultText(result);
   $('banner').classList.remove('hidden');
   $('actions-play').classList.add('hidden');
   $('actions-over').classList.remove('hidden');
   refresh();
+  if (!S.recorded) {
+    S.recorded = true;
+    Store.addMatch({
+      id: 'm' + S.endedAt,
+      ts: S.endedAt,
+      size: S.game.size,
+      komi: S.game.komi,
+      levelIdx: S.levelIdx,
+      levelLabel: levelLabel(S.levelIdx),
+      moves: S.game.moves.map(m => m.loc),
+      prisoners: [S.game.prisoners[BLACK], S.game.prisoners[WHITE]],
+      result,
+      dead: deadStr || null,
+    });
+  }
+  Store.clearCurrent();
+  refreshResumeButton();
 }
 
-/* ---------------- controls ---------------- */
-function wireControls() {
-  $('start-btn').onclick = () => { if (S.ready) newGame(); };
-  $('btn-menu').onclick = () => {
-    $('game').classList.add('hidden');
-    $('menu').classList.remove('hidden');
+/* =============================== HISTORY =============================== */
+function renderHistory() {
+  const list = $('hist-list');
+  const h = Store.history();
+  if (!h.length) {
+    list.innerHTML = `<p class="empty">No finished matches yet.<br>
+      <span class="dimmer">Games shorter than ${Store.MIN_MOVES_TO_KEEP} moves are not kept.</span></p>`;
+    return;
+  }
+  list.innerHTML = h.map((m, i) => {
+    const won = m.result.winner === 'B';
+    const detail = m.result.reason === 'resign'
+      ? `${won ? 'Black' : 'White'} by resignation`
+      : `${won ? 'Black' : 'White'} +${fmt(m.result.by)}`;
+    return `<button class="hist-row" data-i="${i}">
+      <span class="hist-stone ${won ? 'black' : 'white'}"></span>
+      <span class="hist-main">
+        <span class="hist-top">${detail}</span>
+        <span class="hist-bot">${m.size}×${m.size} · ${m.levelLabel} · ${m.moves.length} moves</span>
+      </span>
+      <span class="hist-when">${when(m.ts)}</span>
+    </button>`;
+  }).join('');
+  list.onclick = e => {
+    const row = e.target.closest('.hist-row');
+    if (row) openReview(Store.history()[+row.dataset.i]);
   };
-  $('btn-rematch').onclick = () => newGame();
+}
+
+function when(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return time;
+  const date = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `${date}<br><span class="dimmer">${time}</span>`;
+}
+
+/* =============================== REVIEW =============================== */
+const REV = { match: null, at: 0, positions: null };
+
+function openReview(m) {
+  if (!m) return;
+  REV.match = m;
+  // replay once, keeping a snapshot of every position
+  const g = new Game(m.size, m.komi ?? KOMI);
+  const snaps = [g.pos.clone()];
+  for (const loc of m.moves) { if (!g.play(loc)) break; snaps.push(g.pos.clone()); }
+  REV.positions = snaps;
+  REV.at = snaps.length - 1;
+
+  $('rev-title').textContent = `${m.size}×${m.size} · ${new Date(m.ts).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+  const r = m.result;
+  const who = r.winner === 'B' ? 'Black' : 'White';
+  const line = r.reason === 'resign'
+    ? `${who} wins — ${r.winner === 'B' ? 'White' : 'Black'} resigned`
+    : `${who} wins by ${fmt(r.by)} · ${fmt(r.black)} vs ${fmt(r.white)}`;
+  $('rev-meta').innerHTML =
+    `<div class="rev-result">${line}</div>
+     <div class="rev-sub">${m.levelLabel} · komi ${m.komi ?? KOMI} ·
+       prisoners ${m.prisoners ? m.prisoners[0] : 0}–${m.prisoners ? m.prisoners[1] : 0} ·
+       ${new Date(m.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>`;
+
+  const range = $('rev-range');
+  range.min = 0; range.max = String(snaps.length - 1); range.value = String(REV.at);
+
+  show('review');
+  if (!S.revView) S.revView = new BoardView($('rev-board'), () => {});
+  S.revView.interactive = false;
+  S.revView.size = m.size;
+  S.revView.px = 0;
+  requestAnimationFrame(() => { S.revView.layout(); drawReview(); });
+  drawReview();
+}
+
+function drawReview() {
+  const m = REV.match, v = S.revView;
+  if (!m || !v) return;
+  const pos = REV.positions[REV.at];
+  v.size = m.size;
+  v.board = pos.board;
+  v.lastMove = REV.at > 0 && m.moves[REV.at - 1] >= 0 ? m.moves[REV.at - 1] : null;
+  const atEnd = REV.at === REV.positions.length - 1;
+  if (atEnd && m.dead && m.dead.length === m.size * m.size) {
+    const dead = Uint8Array.from(m.dead, ch => ch === '1' ? 1 : 0);
+    v.overlay = { area: scoreArea(pos, dead, m.komi ?? KOMI).area, dead };
+  } else v.overlay = null;
+  v.render();
+  $('rev-range').value = String(REV.at);
+  const mv = REV.at > 0 ? m.moves[REV.at - 1] : null;
+  const label = REV.at === 0 ? 'start'
+    : (mv === -1 ? 'pass' : coord(mv, m.size));
+  $('rev-counter').textContent = `${REV.at} / ${REV.positions.length - 1} · ${label}`;
+}
+
+const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
+function coord(loc, size) {
+  if (loc < 0) return 'pass';
+  return GTP_LETTERS[loc % size] + (size - ((loc / size) | 0));
+}
+
+function revGo(to) {
+  REV.at = Math.max(0, Math.min(REV.positions.length - 1, to));
+  drawReview();
+}
+
+/* =============================== CONTROLS =============================== */
+function wireControls() {
+  $('start-btn').onclick = () => { if (S.ready) { Store.clearCurrent(); newGame(null); } };
+  $('resume-btn').onclick = () => { if (S.ready) { const c = Store.loadCurrent(); if (c) newGame(c); } };
+  $('history-btn').onclick = () => { renderHistory(); show('history'); };
+  $('hist-back').onclick = () => { refreshResumeButton(); show('menu'); };
+  $('hist-clear').onclick = () => openModal('Clear match history?',
+    'All saved matches will be deleted. This cannot be undone.', 'Clear',
+    () => { Store.clearHistory(); renderHistory(); });
+  $('rev-back').onclick = () => { renderHistory(); show('history'); };
+  $('rev-range').oninput = e => revGo(+e.target.value);
+  $('rev-first').onclick = () => revGo(0);
+  $('rev-prev').onclick = () => revGo(REV.at - 1);
+  $('rev-next').onclick = () => revGo(REV.at + 1);
+  $('rev-last').onclick = () => revGo(REV.positions.length - 1);
+
+  $('btn-menu').onclick = () => { refreshResumeButton(); show('menu'); };
+  $('btn-rematch').onclick = () => newGame(null);
 
   $('btn-pass').onclick = async () => {
     if (S.over || S.thinking || S.game.toMove !== BLACK) return;
     S.game.play(PASS);
-    refresh();
+    refresh(); persist();
     if (S.game.over) return endByPasses();
     await updateEstimate();
     aiTurn();
@@ -233,11 +411,11 @@ function wireControls() {
     let undone = 0;
     while (g.moves.length > 0) {
       g.undo(); undone++;
-      if (g.toMove === BLACK) break;            // back to the human's turn
+      if (g.toMove === BLACK) break;
     }
     if (!undone) return;
     S.overlay = null;
-    refresh();
+    refresh(); persist();
     await updateEstimate();
   };
 
@@ -246,7 +424,8 @@ function wireControls() {
     openModal('Are you sure?', 'Resigning ends the game immediately.', 'Resign', () => {
       if (S.search) S.search.cancelled = true;
       S.thinking = false;
-      finish('<b>White wins</b> — Black resigned');
+      finish({ winner: 'W', reason: 'resign', by: null,
+               black: S.est ? S.est.black : 0, white: S.est ? S.est.white : 0 }, null);
     });
   };
 
@@ -264,12 +443,18 @@ function openModal(title, body, okLabel, cb) {
 }
 function closeModal() { $('modal').classList.add('hidden'); modalCb = null; }
 
-/* ---------------- start ---------------- */
+/* ================================ START ================================ */
 window.addEventListener('load', () => {
-  const lv = localStorage.getItem('go.level');
-  if (lv !== null && LEVELS[+lv]) S.levelIdx = +lv;
   buildMenu();
   wireControls();
+  window.addEventListener('resize', () => {
+    if (S.view && !$('game').classList.contains('hidden')) S.view.layout();
+    if (S.revView && !$('review').classList.contains('hidden')) S.revView.layout();
+  });
   boot();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 });
+
+/* keep the in-progress game safe if the app is backgrounded or killed */
+document.addEventListener('visibilitychange', () => { if (document.hidden && S.game && !S.over) persist(); });
+window.addEventListener('pagehide', () => { if (S.game && !S.over) persist(); });

@@ -21,11 +21,11 @@
     <header class="brand">
       <div class="brand-mark" aria-hidden="true"><span class="s b"></span><span class="s w"></span></div>
       <h1>Go</h1>
-      <p class="sub">Play against the KataGo network — entirely on your phone.</p>
+      <p class="sub">Play the KataGo network — entirely on your phone.</p>
     </header>
 
     <div class="field">
-      <label>Board size</label>
+      <label for="size-seg">Board size</label>
       <div class="seg" id="size-seg">
         <button data-size="9">9 × 9</button>
         <button data-size="13">13 × 13</button>
@@ -34,13 +34,20 @@
     </div>
 
     <div class="field">
-      <label>AI strength</label>
-      <div class="levels" id="level-list"></div>
+      <label for="level-select">AI strength</label>
+      <div class="select-wrap">
+        <select id="level-select"></select>
+      </div>
+    </div>
+
+    <div class="menu-actions">
+      <button id="resume-btn" class="primary hidden">Resume game</button>
+      <button id="start-btn" class="primary" disabled>New game</button>
+      <button id="history-btn">Match history</button>
     </div>
 
     <div class="engine-status" id="engine-status">Starting engine…</div>
-    <button id="start-btn" class="primary" disabled>Start game</button>
-    <p class="foot">You play Black. Chinese rules, komi <span id="komi-note">7.5</span>.<br>
+    <p class="foot">You play Black. Chinese rules, komi 7.5.<br>
       <span class="credit">KataGo network by lightvector · TF.js conversion by Yuji Ichikawa</span></p>
   </div>
 </section>
@@ -50,7 +57,8 @@
   <div class="pcard" id="card-white">
     <div class="pc-stone white"></div>
     <div class="pc-main">
-      <div class="pc-name">White <span class="pc-tag" id="tag-white">KataGo</span></div>
+      <div class="pc-name">White <span class="pc-tag" id="tag-white">KataGo</span>
+        <span class="pass-pill hidden" id="pass-white">PASSED</span></div>
       <div class="pc-sub" id="sub-white">0 prisoners</div>
     </div>
     <div class="pc-score" id="score-white">—</div>
@@ -61,7 +69,8 @@
   <div class="pcard" id="card-black">
     <div class="pc-stone black"></div>
     <div class="pc-main">
-      <div class="pc-name">Black <span class="pc-tag">You</span></div>
+      <div class="pc-name">Black <span class="pc-tag">You</span>
+        <span class="pass-pill hidden" id="pass-black">PASSED</span></div>
       <div class="pc-sub" id="sub-black">0 prisoners</div>
     </div>
     <div class="pc-score" id="score-black">—</div>
@@ -77,6 +86,37 @@
   <div class="actions hidden" id="actions-over">
     <button id="btn-rematch" class="primary">Rematch</button>
     <button id="btn-menu">Menu</button>
+  </div>
+</section>
+
+<!-- ========================= HISTORY LIST ========================= -->
+<section id="history" class="screen hidden">
+  <div class="topbar">
+    <button class="icon-btn" id="hist-back">‹ Menu</button>
+    <span class="topbar-title">Match history</span>
+    <button class="icon-btn subtle" id="hist-clear">Clear</button>
+  </div>
+  <div class="hist-list" id="hist-list"></div>
+</section>
+
+<!-- ========================= MATCH REVIEW ========================= -->
+<section id="review" class="screen hidden">
+  <div class="topbar">
+    <button class="icon-btn" id="rev-back">‹ History</button>
+    <span class="topbar-title" id="rev-title">Match</span>
+    <span class="topbar-spacer"></span>
+  </div>
+  <div class="rev-meta" id="rev-meta"></div>
+  <div class="board-wrap"><canvas id="rev-board"></canvas></div>
+  <div class="rev-scrub">
+    <input type="range" id="rev-range" min="0" max="0" value="0">
+    <div class="rev-counter" id="rev-counter">0 / 0</div>
+  </div>
+  <div class="actions">
+    <button id="rev-first">⏮</button>
+    <button id="rev-prev">◀</button>
+    <button id="rev-next">▶</button>
+    <button id="rev-last">⏭</button>
   </div>
 </section>
 
@@ -98,6 +138,7 @@
 <script src="js/features.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/store.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
