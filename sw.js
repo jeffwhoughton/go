@@ -1,6 +1,6 @@
 /* Service worker: precache the whole app (including the 6 MB network) so the
    game works with no connection at all. */
-const CACHE = 'go-katago-v2';
+const CACHE = 'go-katago-v3';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './css/style.css',

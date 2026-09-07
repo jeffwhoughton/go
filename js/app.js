@@ -3,11 +3,15 @@
 
 const $ = id => document.getElementById(id);
 const KOMI = 7.5;
+/* Even when the engine answers instantly, let White's move land at a human
+   pace rather than appearing the moment the stone is released. */
+const MIN_AI_THINK_MS = 500;
 
 const S = {
   size: 19, levelIdx: 16, net: null, game: null, view: null, revView: null,
   search: null, thinking: false, thinkText: '', over: false,
   est: null, overlay: null, ready: false, recorded: false, endedAt: null,
+  gen: 0,                    // bumped per game; stale async results are dropped
 };
 
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -22,24 +26,26 @@ function show(screen) {
 function buildMenu() {
   const saved = Store.settings();
   S.size = saved.size;
-  S.levelIdx = Math.min(saved.levelIdx, LEVELS.length - 1);
+  S.levelIdx = levelIndexById(saved.levelId, levelIndexById('1d', 0));
 
   const sel = $('level-select');
   sel.innerHTML = LEVELS.map((lv, i) =>
     `<option value="${i}">${lv.rank} — ${lv.name}</option>`).join('');
   sel.value = String(S.levelIdx);
-  sel.onchange = () => { S.levelIdx = +sel.value; Store.saveSettings(S.size, S.levelIdx); };
+  sel.onchange = () => { S.levelIdx = +sel.value; saveSettings(); };
 
   [...$('size-seg').children].forEach(c => c.classList.toggle('on', +c.dataset.size === S.size));
   $('size-seg').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     S.size = +b.dataset.size;
-    Store.saveSettings(S.size, S.levelIdx);
+    saveSettings();
     [...$('size-seg').children].forEach(c => c.classList.toggle('on', c === b));
   };
 
   refreshResumeButton();
 }
+
+function saveSettings() { Store.saveSettings(S.size, LEVELS[S.levelIdx].id); }
 
 function refreshResumeButton() {
   const c = Store.loadCurrent();
@@ -81,11 +87,12 @@ function newGame(saved) {
   ensureView();
   S.game = new Game(saved ? saved.size : S.size, KOMI);
   if (saved) {
-    S.levelIdx = Math.min(saved.levelIdx ?? S.levelIdx, LEVELS.length - 1);
+    S.levelIdx = levelIndexById(Store.readLevelId(saved, LEVELS[S.levelIdx].id), S.levelIdx);
     for (const loc of saved.moves) if (!S.game.play(loc)) break;
   }
   S.over = false; S.overlay = null; S.est = null; S.recorded = false; S.endedAt = null;
   S.thinking = false; S.search = null;
+  S.gen++;
 
   show('game');
   $('banner').classList.add('hidden');
@@ -105,7 +112,7 @@ function newGame(saved) {
 
 function persist() {
   if (S.over || S.game.over) Store.clearCurrent();
-  else Store.saveCurrent(S.game, S.levelIdx);
+  else Store.saveCurrent(S.game, LEVELS[S.levelIdx].id);
 }
 
 /* last move played by `color`, or null */
@@ -152,17 +159,41 @@ function togglePill(el, on) {
   } else if (!on) el.classList.add('hidden');
 }
 
-/* ownership -> per-player estimated area (Chinese scoring) */
+/* Ownership -> estimated territory + prisoners, the same quantity the game is
+   scored with at the end.  Each point contributes only as far as the network is
+   confident about it, so an unsettled board sits near zero for both players and
+   the estimate converges on the exact count as territory closes.
+     empty point   -> |ownership| to whoever it favours
+     enemy stone   -> 2 points if it looks dead (its point, plus the prisoner)
+     own stone     -> nothing
+   Below OWN_DEADBAND the point counts for nobody: the network holds faint
+   opinions about every intersection, and on a 19x19 those add up to a dozen
+   phantom points on an empty board. */
+const OWN_DEADBAND = 0.15;
+const confidence = o => {
+  const a = Math.abs(o);
+  return a <= OWN_DEADBAND ? 0 : (a - OWN_DEADBAND) / (1 - OWN_DEADBAND);
+};
+
 async function updateEstimate() {
-  const g = S.game;
+  const g = S.game, gen = S.gen, atMove = g.moves.length;
   if (S.over) return;
   try {
     const ev = await S.net.evaluate(g);
+    // a new game, an undo or a further move may have landed while we waited
+    if (gen !== S.gen || g !== S.game || atMove !== g.moves.length || S.over) return;
     const sign = (g.toMove === BLACK) ? 1 : -1;
-    let b = 0;
-    for (let i = 0; i < ev.own.length; i++) b += (1 + sign * ev.own[i]) / 2;
-    const total = g.size * g.size;
-    S.est = { black: b, white: total - b + g.komi };
+    let b = 0, w = 0;
+    for (let i = 0; i < ev.own.length; i++) {
+      const o = sign * ev.own[i];              // +1 = Black owns, -1 = White owns
+      const v = confidence(o);                 // 0 until the point is really settled
+      if (v === 0) continue;
+      const c = g.board[i];
+      if (c === EMPTY) { if (o > 0) b += v; else w += v; }
+      else if (c === WHITE) { if (o > 0) b += 2 * v; }   // white stone looking dead
+      else if (o < 0) w += 2 * v;                        // black stone looking dead
+    }
+    S.est = { black: b + g.prisoners[BLACK], white: w + g.prisoners[WHITE] + g.komi };
     refresh();
   } catch (e) { console.warn(e); }
 }
@@ -191,6 +222,7 @@ async function aiTurn() {
   const level = LEVELS[S.levelIdx];
   const search = new Search(S.net, g);
   S.search = search;
+  const startedAt = performance.now();
   let out;
   try {
     out = await search.run(level, (done, total) => {
@@ -198,7 +230,9 @@ async function aiTurn() {
       const el = $('sub-white'); if (el) el.textContent = S.thinkText;
     });
   } catch (e) { console.error(e); S.thinking = false; refresh(); return; }
-  if (search.cancelled || S.search !== search) return;
+  const spent = performance.now() - startedAt;
+  if (spent < MIN_AI_THINK_MS) await new Promise(r => setTimeout(r, MIN_AI_THINK_MS - spent));
+  if (search.cancelled || S.search !== search) return;   // undo may have landed during the pause
   S.thinking = false; S.search = null;
 
   if (!g.play(out.move)) {                 // superko or other rejection
@@ -227,7 +261,7 @@ async function endByPasses() {
     if (c === BLACK && ownBlack < -0.3) dead[i] = 1;
     if (c === WHITE && ownBlack > 0.3) dead[i] = 1;
   }
-  const sc = scoreArea(g.pos, dead, g.komi);
+  const sc = scoreTerritory(g.pos, dead, g.komi, g.prisoners);
   S.thinking = false;
   S.overlay = { area: sc.area, dead };
   S.est = { black: sc.black, white: sc.white };
@@ -257,7 +291,7 @@ function finish(result, deadStr) {
       ts: S.endedAt,
       size: S.game.size,
       komi: S.game.komi,
-      levelIdx: S.levelIdx,
+      levelId: LEVELS[S.levelIdx].id,
       levelLabel: levelLabel(S.levelIdx),
       moves: S.game.moves.map(m => m.loc),
       prisoners: [S.game.prisoners[BLACK], S.game.prisoners[WHITE]],
@@ -355,7 +389,7 @@ function drawReview() {
   const atEnd = REV.at === REV.positions.length - 1;
   if (atEnd && m.dead && m.dead.length === m.size * m.size) {
     const dead = Uint8Array.from(m.dead, ch => ch === '1' ? 1 : 0);
-    v.overlay = { area: scoreArea(pos, dead, m.komi ?? KOMI).area, dead };
+    v.overlay = { area: scoreTerritory(pos, dead, m.komi ?? KOMI, pos.prisoners).area, dead };
   } else v.overlay = null;
   v.render();
   $('rev-range').value = String(REV.at);

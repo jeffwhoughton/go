@@ -9,6 +9,12 @@ const Store = (() => {
   const MAX_MATCHES = 60;
   const MIN_MOVES_TO_KEEP = 6;      // a 2-3 move stub is not worth remembering
 
+  /* Levels used to be stored by array index.  Two rungs (8k, 6k) were added
+     later, so a bare index from an older build has to be translated through
+     the ranks it used to mean. */
+  const LEGACY_IDS = ['30k','27k','25k','22k','20k','18k','15k','13k','11k','9k',
+                      '7k','5k','4k','3k','2k','1k','1d','2d','3d','4d','5d','max'];
+
   const get = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
   const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
   const del = k => { try { localStorage.removeItem(k); } catch (e) {} };
@@ -18,13 +24,20 @@ const Store = (() => {
     settings() {
       const s = get(K_SET) || {};
       return { size: [9, 13, 19].includes(s.size) ? s.size : 19,
-               levelIdx: Number.isInteger(s.levelIdx) ? s.levelIdx : 16 };
+               levelId: this.readLevelId(s, '1d') };
     },
-    saveSettings(size, levelIdx) { put(K_SET, { size, levelIdx }); },
+    saveSettings(size, levelId) { put(K_SET, { size, levelId }); },
+
+    /* accepts {levelId} from current builds, {levelIdx} from older ones */
+    readLevelId(o, dflt) {
+      if (o && typeof o.levelId === 'string') return o.levelId;
+      if (o && Number.isInteger(o.levelIdx) && LEGACY_IDS[o.levelIdx]) return LEGACY_IDS[o.levelIdx];
+      return dflt;
+    },
 
     /* ---- game in progress ---- */
-    saveCurrent(game, levelIdx) {
-      put(K_CUR, { size: game.size, komi: game.komi, levelIdx,
+    saveCurrent(game, levelId) {
+      put(K_CUR, { size: game.size, komi: game.komi, levelId,
                    moves: game.moves.map(m => m.loc), ts: Date.now() });
     },
     loadCurrent() {

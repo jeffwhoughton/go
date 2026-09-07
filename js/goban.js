@@ -398,6 +398,34 @@ function calculateArea(pos) {
  *  Final scoring (Chinese / area) with dead stones removed
  *  dead: Uint8Array flags per point (1 = stone is dead)
  * ======================================================================== */
+/* Territory scoring: enclosed empty points + prisoners taken during play +
+   the opponent's dead stones, plus komi for White.
+   prisoners is the game's [_, takenByBlack, takenByWhite] counter. */
+function scoreTerritory(pos, dead, komi, prisoners) {
+  const n = pos.n;
+  const work = pos.clone();
+  let deadBlack = 0, deadWhite = 0;
+  for (let i = 0; i < n; i++) {
+    if (dead && dead[i] && work.board[i] !== EMPTY) {
+      if (work.board[i] === BLACK) deadBlack++; else deadWhite++;
+      work.board[i] = EMPTY;
+    }
+  }
+  const terr = new Uint8Array(n);
+  bigTerritories(work, terr);            // only assigns empty regions with one bordering colour
+  let tb = 0, tw = 0;
+  for (let i = 0; i < n; i++) {
+    if (work.board[i] !== EMPTY) continue;
+    if (terr[i] === BLACK) tb++; else if (terr[i] === WHITE) tw++;
+  }
+  const takenB = prisoners ? prisoners[BLACK] : 0;
+  const takenW = prisoners ? prisoners[WHITE] : 0;
+  const black = tb + takenB + deadWhite;
+  const white = tw + takenW + deadBlack + komi;
+  return { black, white, area: terr, territory: [0, tb, tw],
+           deadBlack, deadWhite, diff: black - white };
+}
+
 function scoreArea(pos, dead, komi) {
   const n = pos.n;
   const work = pos.clone();

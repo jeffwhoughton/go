@@ -81,10 +81,12 @@ class KataNet {
     const scoreStdev = softplus(r.misc[1]) * 20.0;
     const lead = r.misc[2] * 20.0 * (1 - noResult);
 
+    // The ownership head emits a raw logit — KataGo's backends return logits and
+    // leave the final activations to the client — so squash it into [-1,1] here.
     const own = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = i % size, y = (i / size) | 0;
-      own[i] = r.own[y * NN_LEN + x];
+      own[i] = Math.tanh(r.own[y * NN_LEN + x]);
     }
     const res = { logits, win, loss, noResult, scoreMean, scoreStdev, lead, own, pla };
     if (this.cache.size > 1200) this.cache.clear();
@@ -95,29 +97,38 @@ class KataNet {
 
 /* ===================== search ====================== */
 const LEVELS = [
-  { name: 'Absolute beginner', rank: '30 kyu', visits: 1,   temp: 5.0,  rand: 0.60 },
-  { name: 'Absolute beginner', rank: '27 kyu', visits: 1,   temp: 4.2,  rand: 0.50 },
-  { name: 'Barely started',    rank: '25 kyu', visits: 1,   temp: 3.6,  rand: 0.40 },
-  { name: 'Barely started',    rank: '22 kyu', visits: 1,   temp: 3.0,  rand: 0.32 },
-  { name: 'Beginner',          rank: '20 kyu', visits: 1,   temp: 2.6,  rand: 0.25 },
-  { name: 'Beginner',          rank: '18 kyu', visits: 1,   temp: 2.3,  rand: 0.19 },
-  { name: 'Novice',            rank: '15 kyu', visits: 1,   temp: 2.0,  rand: 0.14 },
-  { name: 'Novice',            rank: '13 kyu', visits: 1,   temp: 1.8,  rand: 0.10 },
-  { name: 'Casual',            rank: '11 kyu', visits: 1,   temp: 1.6,  rand: 0.07 },
-  { name: 'Casual',            rank: '9 kyu',  visits: 1,   temp: 1.4,  rand: 0.05 },
-  { name: 'Improving',         rank: '7 kyu',  visits: 1,   temp: 1.2,  rand: 0.03 },
-  { name: 'Improving',         rank: '5 kyu',  visits: 1,   temp: 1.0,  rand: 0.015 },
-  { name: 'Club player',       rank: '4 kyu',  visits: 2,   temp: 0.95, rand: 0 },
-  { name: 'Club player',       rank: '3 kyu',  visits: 4,   temp: 0.85, rand: 0 },
-  { name: 'Strong club',       rank: '2 kyu',  visits: 6,   temp: 0.70, rand: 0 },
-  { name: 'Strong club',       rank: '1 kyu',  visits: 10,  temp: 0.60, rand: 0 },
-  { name: 'Shodan',            rank: '1 dan',  visits: 20,  temp: 0.40, rand: 0 },
-  { name: 'Two dan',           rank: '2 dan',  visits: 40,  temp: 0.28, rand: 0 },
-  { name: 'Three dan',         rank: '3 dan',  visits: 80,  temp: 0.18, rand: 0 },
-  { name: 'Four dan',          rank: '4 dan',  visits: 160, temp: 0.10, rand: 0 },
-  { name: 'Five dan',          rank: '5 dan',  visits: 300, temp: 0.05, rand: 0 },
-  { name: 'Maximum',           rank: 'full strength', visits: 800, temp: 0, rand: 0 },
+  { id: '30k', rank: '30 kyu', name: 'Acorn',       visits: 1,   temp: 5.0,  rand: 0.60 },
+  { id: '27k', rank: '27 kyu', name: 'Sapling',     visits: 1,   temp: 4.2,  rand: 0.50 },
+  { id: '25k', rank: '25 kyu', name: 'Fledgling',   visits: 1,   temp: 3.6,  rand: 0.40 },
+  { id: '22k', rank: '22 kyu', name: 'Novice',      visits: 1,   temp: 3.0,  rand: 0.32 },
+  { id: '20k', rank: '20 kyu', name: 'Apprentice',  visits: 1,   temp: 2.6,  rand: 0.25 },
+  { id: '18k', rank: '18 kyu', name: 'Student',     visits: 1,   temp: 2.3,  rand: 0.19 },
+  { id: '15k', rank: '15 kyu', name: 'Scout',       visits: 1,   temp: 2.0,  rand: 0.14 },
+  { id: '13k', rank: '13 kyu', name: 'Journeyman',  visits: 1,   temp: 1.8,  rand: 0.10 },
+  { id: '11k', rank: '11 kyu', name: 'Artisan',     visits: 1,   temp: 1.6,  rand: 0.07 },
+  { id: '9k',  rank: '9 kyu',  name: 'Skirmisher',  visits: 1,   temp: 1.4,  rand: 0.05 },
+  { id: '8k',  rank: '8 kyu',  name: 'Duelist',     visits: 1,   temp: 1.3,  rand: 0.04 },
+  { id: '7k',  rank: '7 kyu',  name: 'Tactician',   visits: 1,   temp: 1.2,  rand: 0.03 },
+  { id: '6k',  rank: '6 kyu',  name: 'Strategist',  visits: 1,   temp: 1.1,  rand: 0.022 },
+  { id: '5k',  rank: '5 kyu',  name: 'Veteran',     visits: 1,   temp: 1.0,  rand: 0.015 },
+  { id: '4k',  rank: '4 kyu',  name: 'Clubmaster',  visits: 2,   temp: 0.95, rand: 0 },
+  { id: '3k',  rank: '3 kyu',  name: 'Adept',       visits: 4,   temp: 0.85, rand: 0 },
+  { id: '2k',  rank: '2 kyu',  name: 'Contender',   visits: 6,   temp: 0.70, rand: 0 },
+  { id: '1k',  rank: '1 kyu',  name: 'Challenger',  visits: 10,  temp: 0.60, rand: 0 },
+  { id: '1d',  rank: '1 dan',  name: 'Shodan',      visits: 20,  temp: 0.40, rand: 0 },
+  { id: '2d',  rank: '2 dan',  name: 'Nidan',       visits: 40,  temp: 0.28, rand: 0 },
+  { id: '3d',  rank: '3 dan',  name: 'Sandan',      visits: 80,  temp: 0.18, rand: 0 },
+  { id: '4d',  rank: '4 dan',  name: 'Yondan',      visits: 160, temp: 0.10, rand: 0 },
+  { id: '5d',  rank: '5 dan',  name: 'Godan',       visits: 300, temp: 0.05, rand: 0 },
+  { id: 'max', rank: 'max strength', name: 'Sensei', visits: 800, temp: 0,   rand: 0 },
 ];
+
+/* Levels are addressed by their stable id so that inserting a rung never
+   silently changes a remembered or in-progress setting. */
+function levelIndexById(id, fallback) {
+  const i = LEVELS.findIndex(l => l.id === id);
+  return i >= 0 ? i : (fallback === undefined ? -1 : fallback);
+}
 
 const CPUCT = 1.1, FPU = 0.25, SCORE_UTILITY = 0.30;
 

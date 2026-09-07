@@ -4,9 +4,9 @@ A progressive web app that plays Go against a KataGo neural network entirely
 on-device. No server, no connection needed after the first load.
 
 * **Board sizes** 9×9, 13×13, 19×19
-* **22 strength settings** in one dropdown, roughly 30 kyu to full strength
+* **24 strength settings** in one dropdown, 30 kyu to full strength, each named
 * You always play **Black**; the AI plays White
-* Chinese rules, area scoring, komi 7.5, positional superko
+* Komi 7.5, positional superko, scored by territory + prisoners
 * Drag to place: press anywhere, guide lines show the target intersection,
   slide to adjust, release to play
 * Live territory/score estimate from the network's ownership head
@@ -98,10 +98,26 @@ random move; from “Club player” upward the search runs, up to 800 visits at
 maximum with a wall-clock cap so a slow phone degrades gracefully instead of
 hanging.
 
-**Scoring.** Scores shown are Chinese area scores, which is what KataGo is
-trained on, so they match the final result exactly. At the end of the game dead
-stones are identified from the ownership head, removed, and the board is scored
-strictly.
+**Scoring.** Games are counted the Japanese way — enclosed territory, plus
+prisoners taken during play, plus the opponent's dead stones, plus komi for
+White. The live figure on each player's row is the *same* quantity estimated
+from the ownership head, so it converges on the final count rather than jumping
+to a different one at the end. Each point only contributes as far as the network
+is confident about it (an empty point is worth its ownership magnitude to
+whoever it favours, an enemy stone that looks dead is worth two), so an
+unsettled board sits near zero for both players instead of splitting the whole
+board 50/50.
+
+The ownership head returns raw logits — KataGo's backends emit logits and leave
+the final activations to the client — so `tanh` is applied before any of this.
+Without it a single point can contribute more than one, and a player's score can
+run negative.
+
+The engine itself plays under KataGo's native area rules, which is the
+configuration the network is strongest in. The two rulesets differ by about a
+point in normal play; the visible effect is that the AI has no incentive to
+avoid filling its own territory in the last few moves, which under territory
+counting can cost it a point or two.
 
 **Backends.** WebGL first, WASM second, plain CPU last. The status line on the
 menu says which one is in use.
