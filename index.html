@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#15171c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Go — KataGo</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============================ MENU ============================ -->
+<section id="menu" class="screen">
+  <div class="menu-inner">
+    <header class="brand">
+      <div class="brand-mark" aria-hidden="true"><span class="s b"></span><span class="s w"></span></div>
+      <h1>Go</h1>
+      <p class="sub">Play against the KataGo network — entirely on your phone.</p>
+    </header>
+
+    <div class="field">
+      <label>Board size</label>
+      <div class="seg" id="size-seg">
+        <button data-size="9">9 × 9</button>
+        <button data-size="13">13 × 13</button>
+        <button data-size="19" class="on">19 × 19</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>AI strength</label>
+      <div class="levels" id="level-list"></div>
+    </div>
+
+    <div class="engine-status" id="engine-status">Starting engine…</div>
+    <button id="start-btn" class="primary" disabled>Start game</button>
+    <p class="foot">You play Black. Chinese rules, komi <span id="komi-note">7.5</span>.<br>
+      <span class="credit">KataGo network by lightvector · TF.js conversion by Yuji Ichikawa</span></p>
+  </div>
+</section>
+
+<!-- ============================ GAME ============================ -->
+<section id="game" class="screen hidden">
+  <div class="pcard" id="card-white">
+    <div class="pc-stone white"></div>
+    <div class="pc-main">
+      <div class="pc-name">White <span class="pc-tag" id="tag-white">KataGo</span></div>
+      <div class="pc-sub" id="sub-white">0 prisoners</div>
+    </div>
+    <div class="pc-score" id="score-white">—</div>
+  </div>
+
+  <div class="board-wrap"><canvas id="board"></canvas></div>
+
+  <div class="pcard" id="card-black">
+    <div class="pc-stone black"></div>
+    <div class="pc-main">
+      <div class="pc-name">Black <span class="pc-tag">You</span></div>
+      <div class="pc-sub" id="sub-black">0 prisoners</div>
+    </div>
+    <div class="pc-score" id="score-black">—</div>
+  </div>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div class="actions" id="actions-play">
+    <button id="btn-undo">Undo</button>
+    <button id="btn-pass">Pass</button>
+    <button id="btn-resign" class="danger">Resign</button>
+  </div>
+  <div class="actions hidden" id="actions-over">
+    <button id="btn-rematch" class="primary">Rematch</button>
+    <button id="btn-menu">Menu</button>
+  </div>
+</section>
+
+<!-- ============================ MODAL ============================ -->
+<div class="modal-back hidden" id="modal">
+  <div class="modal">
+    <h2 id="modal-title">Are you sure?</h2>
+    <p id="modal-body">Resigning ends the game immediately.</p>
+    <div class="modal-actions">
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-ok" class="danger">Resign</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/vendor/tf.min.js"></script>
+<script src="js/vendor/tf-backend-wasm.min.js"></script>
+<script src="js/goban.js"></script>
+<script src="js/features.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
